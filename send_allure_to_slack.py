@@ -2,6 +2,9 @@
 import json
 import os
 import requests
+import subprocess
+import zipfile
+import shutil
 from datetime import datetime
 import glob
 from dotenv import load_dotenv
@@ -18,7 +21,6 @@ def get_latest_test_run():
         
         result_files.sort(key=os.path.getctime, reverse=True)
         
-        # Берем все файлы за последние 5 минут
         import time
         now = time.time()
         recent_files = [f for f in result_files if now - os.path.getctime(f) < 300]
@@ -80,7 +82,6 @@ def get_failed_tests(tests):
         if test.get('status') in ['failed', 'broken']:
             name = test.get('name', 'Unknown')
             
-            # Убираем дубликаты
             if name in seen_names:
                 continue
             seen_names.add(name)
@@ -88,11 +89,9 @@ def get_failed_tests(tests):
             status_details = test.get('statusDetails', {})
             error = status_details.get('message', 'No error message')
             
-            # Убираем Stacktrace
             if 'Stacktrace' in error:
                 error = error.split('Stacktrace')[0].strip()
             
-            # Убираем длинный текст
             if len(error) > 200:
                 error = error[:200] + '...'
             
@@ -104,15 +103,160 @@ def get_failed_tests(tests):
     return failed_tests
 
 
-def format_slack_message(summary, failed_tests, allure_url=None):
-    """Форматирует сообщение для Slack"""
+def generate_allure_report():
+    """Генерирует Allure отчет"""
+    try:
+        # Проверяем наличие allure в PATH
+        allure_path = shutil.which("allure")
+        if not allure_path:
+            print("[ERROR] Allure not found in PATH")
+            return False
+        
+        if not os.path.exists("allure-results"):
+            print("[ERROR] allure-results not found")
+            return False
+        
+        result = subprocess.run(
+            [allure_path, "generate", "allure-results", "-o", "allure-report", "--clean"],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        
+        if result.returncode == 0:
+            print("[OK] Allure report generated")
+            return True
+        else:
+            print(f"[ERROR] Failed to generate report: {result.stderr}")
+            return False
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        return False
+
+
+def zip_allure_report():
+    """Создает zip архив с Allure отчетом"""
+    try:
+        if not os.path.exists("allure-report"):
+            print("[ERROR] allure-report not found")
+            return None
+        
+        zip_path = "allure-report.zip"
+        
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+        
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for root, dirs, files in os.walk("allure-report"):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, "allure-report")
+                    zipf.write(file_path, arcname)
+        
+        print(f"[OK] Report zipped: {zip_path}")
+        return zip_path
+    except Exception as e:
+        print(f"[ERROR] Failed to zip report: {e}")
+        return None
+
+
+def send_file_to_slack(file_path, filename="allure-report.zip"):
+    """Отправляет файл в Slack через files.upload API"""
+    
+    # Получаем токен из переменных окружения
+    slack_token = os.getenv('SLACK_TOKEN')
+    if not slack_token:
+        print("[WARN] SLACK_TOKEN not set, using alternative method...")
+        return send_file_via_webhook(file_path, filename)
+    
+    try:
+        channel = os.getenv('SLACK_CHANNEL', '#general')
+        
+        # Формируем комментарий
+        tests = get_latest_test_run()
+        status_text = "неизвестен"
+        
+        if tests:
+            summary = get_summary_from_files(tests)
+            if summary:
+                failed = summary['statistic']['failed']
+                broken = summary['statistic']['broken']
+                passed = summary['statistic']['passed']
+                total = summary['statistic']['total']
+                
+                if failed > 0 or broken > 0:
+                    status_text = f"❌ ПРОВАЛЕН (Failed: {failed}, Broken: {broken})"
+                else:
+                    status_text = f"✅ УСПЕШЕН (Passed: {passed})"
+        
+        # Отправляем файл через Slack API
+        url = "https://slack.com/api/files.upload"
+        
+        with open(file_path, 'rb') as f:
+            files = {'file': (filename, f, 'application/zip')}
+            data = {
+                'channels': channel,
+                'initial_comment': f'📊 Allure Test Report - {status_text}\n\nЗапуск: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
+                'filename': filename
+            }
+            headers = {
+                'Authorization': f'Bearer {slack_token}'
+            }
+            
+            response = requests.post(url, data=data, files=files, headers=headers)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('ok'):
+                print("[OK] Report file sent to Slack!")
+                return True
+            else:
+                print(f"[ERROR] Slack API error: {result.get('error')}")
+                return False
+        else:
+            print(f"[ERROR] HTTP {response.status_code}: {response.text}")
+            return False
+            
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        return False
+
+
+def send_file_via_webhook(file_path, filename="allure-report.zip"):
+    """Альтернативный метод отправки файла через Webhook"""
+    try:
+        webhook_url = os.getenv('SLACK_WEBHOOK_URL')
+        if not webhook_url:
+            print("[ERROR] SLACK_WEBHOOK_URL is not set")
+            return False
+        
+        # Пробуем отправить файл через multipart
+        with open(file_path, 'rb') as f:
+            response = requests.post(
+                webhook_url,
+                files={'file': (filename, f, 'application/zip')},
+                data={'initial_comment': f'📊 Allure Test Report'}
+            )
+        
+        if response.status_code == 200:
+            print("[OK] Report file sent via webhook!")
+            return True
+        else:
+            print(f"[ERROR] Webhook error: {response.status_code}")
+            return False
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        return False
+
+
+def format_slack_message(summary, failed_tests):
+    """Форматирует текстовое сообщение для Slack"""
     
     total = summary['statistic']['total']
     passed = summary['statistic']['passed']
     failed = summary['statistic']['failed']
     broken = summary['statistic']['broken']
     
-    # Статус
     if failed > 0 or broken > 0:
         color = "#FF0000"
         status_icon = "❌"
@@ -122,7 +266,6 @@ def format_slack_message(summary, failed_tests, allure_url=None):
         status_icon = "✅"
         status_text = "PASSED"
     
-    # Сообщение
     message = {
         "attachments": [
             {
@@ -149,15 +292,6 @@ def format_slack_message(summary, failed_tests, allure_url=None):
         ]
     }
     
-    # ✅ Ссылка на Allure отчет
-    if allure_url:
-        message["attachments"][0]["fields"].append({
-            "title": "🔗 *Full Allure Report*",
-            "value": f"<{allure_url}|📊 Open detailed report with graphs>",
-            "short": False
-        })
-    
-    # ❌ Упавшие тесты
     if failed_tests:
         test_list = ""
         for idx, test in enumerate(failed_tests[:5], 1):
@@ -182,12 +316,9 @@ def format_slack_message(summary, failed_tests, allure_url=None):
     return message
 
 
-def send_to_slack():
-    """Отправляет отчет в Slack"""
+def send_text_to_slack():
+    """Отправляет только текстовый отчет в Slack"""
     
-    print("[INFO] Sending latest test report to Slack...")
-    
-    # Получаем данные
     tests = get_latest_test_run()
     if not tests:
         print("[ERROR] No test results found")
@@ -196,13 +327,8 @@ def send_to_slack():
     summary = get_summary_from_files(tests)
     failed_tests = get_failed_tests(tests)
     
-    # ✅ URL Allure отчета (добавь в .env)
-    allure_url = os.getenv('ALLURE_REPORT_URL')
+    message = format_slack_message(summary, failed_tests)
     
-    # Формируем сообщение
-    message = format_slack_message(summary, failed_tests, allure_url)
-    
-    # Отправляем
     webhook_url = os.getenv('SLACK_WEBHOOK_URL')
     if not webhook_url:
         print("[ERROR] SLACK_WEBHOOK_URL is not set")
@@ -211,7 +337,7 @@ def send_to_slack():
     try:
         response = requests.post(webhook_url, json=message)
         if response.status_code == 200:
-            print("[OK] Report sent to Slack!")
+            print("[OK] Text report sent to Slack!")
             return True
         else:
             print(f"[ERROR] {response.status_code}")
@@ -219,6 +345,32 @@ def send_to_slack():
     except Exception as e:
         print(f"[ERROR] {e}")
         return False
+
+
+def send_to_slack():
+    """Основная функция"""
+    
+    print("[INFO] Sending latest test report to Slack...")
+    
+    # 1. Генерируем отчет
+    generate_allure_report()
+    
+    # 2. Отправляем текстовый отчет
+    print("[INFO] Sending text report...")
+    send_text_to_slack()
+    
+    # 3. Отправляем файл
+    if os.path.exists("allure-report"):
+        print("[INFO] Sending report file...")
+        zip_path = zip_allure_report()
+        if zip_path:
+            send_file_to_slack(zip_path)
+            try:
+                os.remove(zip_path)
+            except:
+                pass
+    
+    print("[OK] Done!")
 
 
 if __name__ == "__main__":
