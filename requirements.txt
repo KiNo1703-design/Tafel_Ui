@@ -1,0 +1,9 @@
+# requirements.txt
+pytest==8.1.1
+selenium==4.18.1
+webdriver-manager==4.0.1
+pytest-xdist==3.5.0
+pytest-rerunfailures==14.0
+pytest-html==4.1.1
+allure-pytest==2.13.2
+python-dotenv==1.0.1
