@@ -166,7 +166,6 @@ def send_file_to_slack(file_path, filename="allure-report.zip"):
                 failed = summary['statistic']['failed']
                 broken = summary['statistic']['broken']
                 passed = summary['statistic']['passed']
-                total = summary['statistic']['total']
                 
                 if failed > 0 or broken > 0:
                     status_text = f"FAILED (Failed: {failed}, Broken: {broken})"
@@ -231,7 +230,7 @@ def send_file_via_webhook(file_path, filename="allure-report.zip"):
         return False
 
 
-def format_slack_message(summary, failed_tests):
+def format_slack_message(summary, failed_tests, allure_url=None):
     """Форматирует текстовое сообщение для Slack (БЕЗ ЭМОДЗИ)"""
     
     total = summary['statistic']['total']
@@ -266,12 +265,21 @@ def format_slack_message(summary, failed_tests):
                         "short": True
                     }
                 ],
-                "footer": "UI Auto Tests • Current Run",
+                "footer": "UI Auto Tests",
                 "footer_icon": "https://allure-framework.github.io/allure-docs/static/img/allure-logo.svg"
             }
         ]
     }
     
+    # ✅ Ссылка на Allure отчёт
+    if allure_url:
+        message["attachments"][0]["fields"].append({
+            "title": "Allure Report",
+            "value": f"<{allure_url}|Open Full Report>",
+            "short": False
+        })
+    
+    # ❌ Упавшие тесты
     if failed_tests:
         test_list = ""
         for idx, test in enumerate(failed_tests[:5], 1):
@@ -307,7 +315,10 @@ def send_text_to_slack():
     summary = get_summary_from_files(tests)
     failed_tests = get_failed_tests(tests)
     
-    message = format_slack_message(summary, failed_tests)
+    # ✅ Ссылка на отчёт (из переменной окружения)
+    allure_url = os.getenv('ALLURE_REPORT_URL')
+    
+    message = format_slack_message(summary, failed_tests, allure_url)
     
     webhook_url = os.getenv('SLACK_WEBHOOK_URL')
     if not webhook_url:
