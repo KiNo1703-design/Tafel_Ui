@@ -1,5 +1,9 @@
 # conftest.py
 import pytest
+import subprocess
+import shutil
+import os
+import time
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -13,17 +17,14 @@ from pages.sidebar_menu import SidebarMenu
 from pages.device_creation_page import DeviceCreationPage
 from config import Config
 from utils.error_handler import ErrorCollector, safe_close_party
-import os
-import time
 
 
 def pytest_addoption(parser):
-    """Добавляем параметр командной строки для headless режима"""
     parser.addoption(
         "--headless",
         action="store_true",
         default=False,
-        help="Запуск в headless режиме (без открытия браузера)"
+        help="Запуск в headless режиме"
     )
     parser.addoption(
         "--browser",
@@ -34,12 +35,22 @@ def pytest_addoption(parser):
     )
 
 
+def pytest_sessionstart(session):
+    print("\n[INFO] Cleaning allure-results before run...")
+    try:
+        if os.path.exists("allure-results"):
+            shutil.rmtree("allure-results")
+            print("  [OK] allure-results removed")
+        os.makedirs("allure-results", exist_ok=True)
+        print("  [OK] allure-results created")
+    except Exception as e:
+        print(f"  [WARN] Cleanup error: {e}")
+
+
 @pytest.fixture(scope="function")
 def driver(request):
-    """Создает и закрывает браузер для каждого теста"""
-    print("\n🟢 Запуск браузера...")
+    print("\n[INFO] Starting browser...")
     
-    # Получаем параметры
     headless = request.config.getoption("--headless")
     browser = request.config.getoption("--browser")
     
@@ -54,30 +65,39 @@ def driver(request):
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
         
-        # ✅ Headless режим
         if headless:
-            options.add_argument("--headless")
-            options.add_argument("--disable-logging")
-            options.add_argument("--log-level=3")
-            options.add_argument("--silent")
-            print("🧪 Запуск в headless режиме (браузер не отображается)")
+            options.add_argument("--headless=new")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--window-size=1920,1080")
+            print("[INFO] Running in headless mode")
         else:
-            print("👁️ Запуск с открытым браузером")
+            print("[INFO] Running with visible browser")
         
         driver = None
         try:
-            service = Service(ChromeDriverManager().install())
+            # ✅ В контейнере используем системный chromedriver
+            chromedriver_path = os.getenv("CHROMEDRIVER_PATH")
+            if chromedriver_path:
+                print(f"[INFO] Using system chromedriver: {chromedriver_path}")
+                service = Service(chromedriver_path)
+            else:
+                print("[INFO] Using webdriver-manager")
+                service = Service(ChromeDriverManager().install())
+            
             driver = webdriver.Chrome(service=service, options=options)
             driver.implicitly_wait(Config.IMPLICIT_WAIT)
-            driver.set_page_load_timeout(30)
-            print("✅ Браузер Chrome запущен")
+            driver.set_page_load_timeout(60)
+            
+            print("[OK] Chrome browser started")
             yield driver
         except Exception as e:
-            print(f"❌ Ошибка запуска браузера: {e}")
+            print(f"[ERROR] Failed to start browser: {e}")
             raise
         finally:
             if driver:
-                print("🛑 Закрытие браузера...")
+                print("[INFO] Closing browser...")
                 try:
                     driver.quit()
                 except:
@@ -94,24 +114,24 @@ def driver(request):
         
         if headless:
             options.add_argument("--headless")
-            print("🧪 Запуск в headless режиме (браузер не отображается)")
+            print("[INFO] Running in headless mode")
         else:
-            print("👁️ Запуск с открытым браузером")
+            print("[INFO] Running with visible browser")
         
         driver = None
         try:
             service = FirefoxService(GeckoDriverManager().install())
             driver = webdriver.Firefox(service=service, options=options)
             driver.implicitly_wait(Config.IMPLICIT_WAIT)
-            driver.set_page_load_timeout(30)
-            print("✅ Браузер Firefox запущен")
+            driver.set_page_load_timeout(60)
+            print("[OK] Firefox browser started")
             yield driver
         except Exception as e:
-            print(f"❌ Ошибка запуска браузера: {e}")
+            print(f"[ERROR] Failed to start browser: {e}")
             raise
         finally:
             if driver:
-                print("🛑 Закрытие браузера...")
+                print("[INFO] Closing browser...")
                 try:
                     driver.quit()
                 except:
@@ -120,30 +140,24 @@ def driver(request):
 
 @pytest.fixture(scope="function")
 def authenticated_driver(driver):
-    """Возвращает драйвер с уже выполненной авторизацией"""
-    # Очищаем ошибки перед тестом
     ErrorCollector.clear()
-    
     creds = Config.get_credentials()
     
     try:
         auth_page = AuthPage(driver).open()
         auth_page.login(creds["username"], creds["password"])
+        assert auth_page.is_login_successful(), "Failed to login"
+        print("[OK] Authentication completed")
         
-        # Проверяем успешность авторизации
-        assert auth_page.is_login_successful(), "Не удалось авторизоваться"
-        print("✅ Авторизация выполнена")
-        
-        # Ждем загрузки основного контента
         wait = WebDriverWait(driver, 10)
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".sidebar, .main-content, nav")))
         time.sleep(1)
         
     except Exception as e:
-        print(f"❌ Ошибка при авторизации: {e}")
+        print(f"[ERROR] Authentication error: {e}")
         try:
             driver.save_screenshot("auth_error.png")
-            print("📸 Скриншот сохранен как auth_error.png")
+            print("[INFO] Screenshot saved as auth_error.png")
         except:
             pass
         raise
@@ -153,18 +167,15 @@ def authenticated_driver(driver):
 
 @pytest.fixture(scope="function")
 def device_page(authenticated_driver):
-    """Возвращает страницу 'Выпуск устройств' с уже открытой формой"""
-    
     try:
         sidebar = SidebarMenu(authenticated_driver)
         device_page = sidebar.click_device_release()
         time.sleep(2)
         
-        # Проверяем, есть ли активная партия
         try:
             close_btn = authenticated_driver.find_element(By.ID, "btnCloseParty")
             if close_btn.is_displayed():
-                print("⚠️ Найдена активная партия, закрываем...")
+                print("[WARN] Active party found, closing...")
                 authenticated_driver.execute_script("arguments[0].click();", close_btn)
                 time.sleep(0.5)
                 confirm = authenticated_driver.find_element(By.ID, "mainModalPrimary")
@@ -175,82 +186,32 @@ def device_page(authenticated_driver):
         except:
             pass
         
-        # Ожидаем кнопку создания партии
         wait = WebDriverWait(authenticated_driver, 15)
         create_party_btn = wait.until(
             EC.element_to_be_clickable(device_page.CREATE_PARTY_BUTTON)
         )
-        print("✅ Кнопка 'Создать партию' доступна")
+        print("[OK] 'Create party' button available")
         
-        # Скролл и клик по кнопке
         authenticated_driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", create_party_btn)
         time.sleep(0.5)
         authenticated_driver.execute_script("arguments[0].click();", create_party_btn)
         time.sleep(1)
         
-        # Проверяем, что форма открылась
         wait.until(EC.visibility_of_element_located(device_page.DEVICE_TYPE_SELECT))
-        print("✅ Форма создания партии открыта")
+        print("[OK] Party creation form opened")
         
         return device_page
         
     except TimeoutException as e:
-        print(f"❌ Таймаут при ожидании элементов: {e}")
+        print(f"[ERROR] Timeout waiting for elements: {e}")
         try:
             authenticated_driver.save_screenshot("device_page_error.png")
-            print("📸 Скриншот сохранен как device_page_error.png")
+            print("[INFO] Screenshot saved as device_page_error.png")
         except:
             pass
         raise
     except Exception as e:
-        print(f"❌ Ошибка при открытии страницы создания: {e}")
-        raise
-
-
-@pytest.fixture(scope="function")
-def clean_device_page(authenticated_driver):
-    """Очищает все устройства перед началом теста и возвращает страницу"""
-    
-    try:
-        sidebar = SidebarMenu(authenticated_driver)
-        device_page = sidebar.click_device_release()
-        time.sleep(2)
-        
-        # Проверяем, есть ли активная партия
-        try:
-            close_btn = authenticated_driver.find_element(By.ID, "btnCloseParty")
-            if close_btn.is_displayed():
-                print("⚠️ Найдена активная партия, закрываем...")
-                authenticated_driver.execute_script("arguments[0].click();", close_btn)
-                time.sleep(0.5)
-                confirm = authenticated_driver.find_element(By.ID, "mainModalPrimary")
-                authenticated_driver.execute_script("arguments[0].click();", confirm)
-                time.sleep(2)
-                authenticated_driver.refresh()
-                time.sleep(1)
-        except:
-            pass
-        
-        # Ожидаем кнопку создания партии
-        wait = WebDriverWait(authenticated_driver, 15)
-        create_party_btn = wait.until(
-            EC.element_to_be_clickable(device_page.CREATE_PARTY_BUTTON)
-        )
-        print("✅ Кнопка 'Создать партию' доступна")
-        
-        # Кликаем для открытия формы
-        authenticated_driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", create_party_btn)
-        time.sleep(0.5)
-        authenticated_driver.execute_script("arguments[0].click();", create_party_btn)
-        time.sleep(1)
-        
-        wait.until(EC.visibility_of_element_located(device_page.DEVICE_TYPE_SELECT))
-        print("✅ Форма создания партии открыта")
-        
-        return device_page
-        
-    except Exception as e:
-        print(f"❌ Ошибка при подготовке страницы: {e}")
+        print(f"[ERROR] Error opening creation page: {e}")
         raise
 
 
@@ -268,81 +229,60 @@ def pytest_runtest_makereport(item, call):
                 safe_name = item.name.replace('[', '_').replace(']', '_').replace('/', '_').replace('\\', '_')
                 screenshot_path = os.path.join(screenshot_dir, f"{safe_name}.png")
                 driver.save_screenshot(screenshot_path)
-                print(f"\n📸 Скриншот сохранен: {screenshot_path}")
+                print(f"\n[INFO] Screenshot saved: {screenshot_path}")
                 
                 html_path = os.path.join(screenshot_dir, f"{safe_name}.html")
                 try:
                     with open(html_path, 'w', encoding='utf-8') as f:
                         f.write(driver.page_source)
-                    print(f"📄 HTML сохранен: {html_path}")
+                    print(f"[INFO] HTML saved: {html_path}")
                 except:
                     pass
                 
             except Exception as e:
-                print(f"⚠️ Не удалось сохранить скриншот: {e}")
+                print(f"[WARN] Failed to save screenshot: {e}")
 
-
-# Опционально: фикстура для очистки после каждого теста
-@pytest.fixture(scope="function", autouse=True)
-def cleanup_after_test(request):
-    """Автоматическая очистка после каждого теста"""
-    yield
-    # Здесь можно добавить очистку, если нужно
-    pass
 
 def pytest_configure(config):
-    """Регистрируем плагин для отправки в Slack"""
     try:
         from slack_plugin import SlackPlugin
         config.pluginmanager.register(SlackPlugin(config), "slack_plugin")
-        print("✅ Slack плагин зарегистрирован")
+        print("[OK] Slack plugin registered")
     except ImportError:
         pass
     except Exception as e:
-        print(f"⚠️ Ошибка регистрации Slack плагина: {e}")
+        print(f"[WARN] Error registering Slack plugin: {e}")
 
 
 def pytest_sessionfinish(session, exitstatus):
-    """Принудительно генерируем Allure-отчет после тестов"""
-    
-    import os
-    import subprocess
-    import shutil
-    
-    # Проверяем, что есть результаты
     if not os.path.exists("allure-results"):
+        print("[WARN] allure-results not found, skipping")
         return
     
     print("\n" + "="*60)
-    print("📊 Генерация Allure-отчета...")
+    print("[INFO] Generating Allure report...")
     print("="*60)
     
     try:
-        # Путь к Allure
         allure_path = shutil.which("allure") or "allure"
         
-        # Генерируем отчет
         result = subprocess.run(
             [allure_path, "generate", "allure-results", "-o", "allure-report", "--clean"],
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=60
         )
         
         if result.returncode == 0:
-            print("✅ Allure-отчет сгенерирован")
+            print("[OK] Allure report generated")
             
-            # Проверяем, есть ли summary.json в allure-report
             if os.path.exists("allure-report/widgets/summary.json"):
-                # Копируем в allure-results
                 os.makedirs("allure-results/widgets", exist_ok=True)
                 shutil.copy("allure-report/widgets/summary.json", "allure-results/widgets/summary.json")
-                print("✅ summary.json скопирован в allure-results")
+                print("[OK] summary.json copied to allure-results")
             else:
-                # Если нет summary.json — создаём вручную
-                print("⚠️ summary.json не найден, создаём вручную...")
+                print("[WARN] summary.json not found, creating manually...")
                 
-                # Собираем статистику из result-файлов
                 import json
                 import glob
                 
@@ -380,27 +320,31 @@ def pytest_sessionfinish(session, exitstatus):
                 os.makedirs("allure-results/widgets", exist_ok=True)
                 with open("allure-results/widgets/summary.json", 'w', encoding='utf-8') as f:
                     json.dump(summary, f)
-                print("✅ summary.json создан вручную")
+                print("[OK] summary.json created manually")
             
-            # Отправляем в Slack
-            print("📤 Отправка в Slack...")
+            print("[INFO] Sending to Slack...")
             slack_result = subprocess.run(
                 ["python", "send_allure_to_slack.py"],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=60
             )
             
             if slack_result.returncode == 0:
-                print("✅ Отчет отправлен в Slack!")
+                print("[OK] Report sent to Slack!")
                 if slack_result.stdout:
                     print(slack_result.stdout)
             else:
-                print(f"⚠️ Ошибка отправки в Slack: {slack_result.stderr}")
+                print(f"[WARN] Error sending to Slack: {slack_result.stderr}")
         else:
-            print(f"⚠️ Ошибка генерации отчета: {result.stderr}")
+            print(f"[WARN] Error generating report: {result.stderr}")
             
+    except subprocess.TimeoutExpired:
+        print("[WARN] Timeout generating report")
+    except FileNotFoundError as e:
+        print(f"[WARN] File not found: {e}")
+        print("   Check Allure installation: allure --version")
     except Exception as e:
-        print(f"⚠️ Ошибка: {e}")
+        print(f"[WARN] Error: {e}")
     
     print("="*60)

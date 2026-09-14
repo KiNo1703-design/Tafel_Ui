@@ -1,0 +1,85 @@
+name: UI Tests with Allure Report
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Checkout GitHub Pages with history
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          ref: gh-pages
+          path: gh-pages-dir
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # ✅ Устанавливаем Chrome, ChromeDriver и Java (для Allure)
+      - name: Install Chrome and Allure
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y chromium chromium-driver default-jre wget unzip
+          sudo ln -sf /usr/bin/chromium /usr/bin/google-chrome
+          sudo ln -sf /usr/bin/chromium /usr/bin/google-chrome-stable
+          echo "CHROME_BIN=/usr/bin/chromium" >> $GITHUB_ENV
+          echo "CHROMEDRIVER_PATH=/usr/bin/chromedriver" >> $GITHUB_ENV
+          
+          # Allure
+          wget https://github.com/allure-framework/allure2/releases/download/2.32.0/allure-2.32.0.zip
+          unzip allure-2.32.0.zip -d /opt/
+          sudo ln -s /opt/allure-2.32.0/bin/allure /usr/local/bin/allure
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest tests/test_release_types.py -v --headless --alluredir=allure-results --capture=no || true
+
+      - name: Generate Allure Report
+        uses: andgineer/allure-report@v3.6
+        id: allure-report
+        if: always()
+        with:
+          allure-results: allure-results
+          website: gh-pages-dir
+          reports-site-path: builds/tests
+
+      - name: Publish Allure Report to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        if: ${{ always() && (steps.allure-report.outcome == 'success') }}
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ${{ steps.allure-report.outputs.reports-site }}
+          destination_dir: ${{ steps.allure-report.outputs.reports-site-path }}
+
+      - name: Send Slack Notification
+        if: always()
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          payload: |
+            {
+              "text": "Allure Report is ready: ${{ steps.allure-report.outputs.report-url }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

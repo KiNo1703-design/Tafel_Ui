@@ -12,24 +12,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def get_latest_test_run():
-    """Получает информацию о последнем запуске тестов"""
+def get_all_tests():
+    """Получает ВСЕ тесты из allure-results"""
     try:
         result_files = glob.glob('allure-results/*-result.json')
         if not result_files:
             return None
         
-        result_files.sort(key=os.path.getctime, reverse=True)
-        
-        import time
-        now = time.time()
-        recent_files = [f for f in result_files if now - os.path.getctime(f) < 300]
-        
-        if not recent_files:
-            recent_files = [result_files[0]]
-        
         tests = []
-        for file in recent_files:
+        for file in result_files:
             with open(file, 'r', encoding='utf-8') as f:
                 tests.append(json.load(f))
         
@@ -106,11 +97,7 @@ def get_failed_tests(tests):
 def generate_allure_report():
     """Генерирует Allure отчет"""
     try:
-        # Проверяем наличие allure в PATH
-        allure_path = shutil.which("allure")
-        if not allure_path:
-            print("[ERROR] Allure not found in PATH")
-            return False
+        allure_path = shutil.which("allure") or "allure"
         
         if not os.path.exists("allure-results"):
             print("[ERROR] allure-results not found")
@@ -161,9 +148,7 @@ def zip_allure_report():
 
 
 def send_file_to_slack(file_path, filename="allure-report.zip"):
-    """Отправляет файл в Slack через files.upload API"""
-    
-    # Получаем токен из переменных окружения
+    """Отправляет файл в Slack"""
     slack_token = os.getenv('SLACK_TOKEN')
     if not slack_token:
         print("[WARN] SLACK_TOKEN not set, using alternative method...")
@@ -172,9 +157,8 @@ def send_file_to_slack(file_path, filename="allure-report.zip"):
     try:
         channel = os.getenv('SLACK_CHANNEL', '#general')
         
-        # Формируем комментарий
-        tests = get_latest_test_run()
-        status_text = "неизвестен"
+        tests = get_all_tests()
+        status_text = "unknown"
         
         if tests:
             summary = get_summary_from_files(tests)
@@ -185,18 +169,17 @@ def send_file_to_slack(file_path, filename="allure-report.zip"):
                 total = summary['statistic']['total']
                 
                 if failed > 0 or broken > 0:
-                    status_text = f"❌ ПРОВАЛЕН (Failed: {failed}, Broken: {broken})"
+                    status_text = f"FAILED (Failed: {failed}, Broken: {broken})"
                 else:
-                    status_text = f"✅ УСПЕШЕН (Passed: {passed})"
+                    status_text = f"PASSED (Passed: {passed})"
         
-        # Отправляем файл через Slack API
         url = "https://slack.com/api/files.upload"
         
         with open(file_path, 'rb') as f:
             files = {'file': (filename, f, 'application/zip')}
             data = {
                 'channels': channel,
-                'initial_comment': f'📊 Allure Test Report - {status_text}\n\nЗапуск: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
+                'initial_comment': f'Allure Test Report - {status_text}\n\nRun: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
                 'filename': filename
             }
             headers = {
@@ -230,12 +213,11 @@ def send_file_via_webhook(file_path, filename="allure-report.zip"):
             print("[ERROR] SLACK_WEBHOOK_URL is not set")
             return False
         
-        # Пробуем отправить файл через multipart
         with open(file_path, 'rb') as f:
             response = requests.post(
                 webhook_url,
                 files={'file': (filename, f, 'application/zip')},
-                data={'initial_comment': f'📊 Allure Test Report'}
+                data={'initial_comment': 'Allure Test Report'}
             )
         
         if response.status_code == 200:
@@ -250,7 +232,7 @@ def send_file_via_webhook(file_path, filename="allure-report.zip"):
 
 
 def format_slack_message(summary, failed_tests):
-    """Форматирует текстовое сообщение для Slack"""
+    """Форматирует текстовое сообщение для Slack (БЕЗ ЭМОДЗИ)"""
     
     total = summary['statistic']['total']
     passed = summary['statistic']['passed']
@@ -259,34 +241,32 @@ def format_slack_message(summary, failed_tests):
     
     if failed > 0 or broken > 0:
         color = "#FF0000"
-        status_icon = "❌"
         status_text = "FAILED"
     else:
         color = "#36a64f"
-        status_icon = "✅"
         status_text = "PASSED"
     
     message = {
         "attachments": [
             {
                 "color": color,
-                "title": f"{status_icon} *Last Test Run* - *{status_text}*",
+                "title": f"Test Run - {status_text}",
                 "fields": [
                     {
-                        "title": "📊 *Test Results*",
-                        "value": f"• *Total:* {total}\n"
-                                f"• ✅ *Passed:* {passed}\n"
-                                f"• ❌ *Failed:* {failed}\n"
-                                f"• ⚠️ *Broken:* {broken}",
+                        "title": "Test Results",
+                        "value": f"* Total: {total}\n"
+                                f"* Passed: {passed}\n"
+                                f"* Failed: {failed}\n"
+                                f"* Broken: {broken}",
                         "short": False
                     },
                     {
-                        "title": "🕐 *Time*",
+                        "title": "Time",
                         "value": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         "short": True
                     }
                 ],
-                "footer": "UI Auto Tests • Latest Run",
+                "footer": "UI Auto Tests • Current Run",
                 "footer_icon": "https://allure-framework.github.io/allure-docs/static/img/allure-logo.svg"
             }
         ]
@@ -295,21 +275,21 @@ def format_slack_message(summary, failed_tests):
     if failed_tests:
         test_list = ""
         for idx, test in enumerate(failed_tests[:5], 1):
-            test_list += f"{idx}. *{test['name']}*\n"
-            test_list += f"   ```{test['error']}```\n\n"
+            test_list += f"{idx}. {test['name']}\n"
+            test_list += f"   {test['error']}\n\n"
         
         if len(failed_tests) > 5:
-            test_list += f"• ... и еще {len(failed_tests) - 5} тестов\n"
+            test_list += f"... and {len(failed_tests) - 5} more tests\n"
         
         message["attachments"][0]["fields"].append({
-            "title": f"❌ *Failed Tests ({len(failed_tests)})*",
+            "title": f"Failed Tests ({len(failed_tests)})",
             "value": test_list,
             "short": False
         })
     else:
         message["attachments"][0]["fields"].append({
-            "title": "🎉 *All Tests Passed!*",
-            "value": "Все автотесты успешно пройдены! 🚀",
+            "title": "All Tests Passed!",
+            "value": "All auto tests passed successfully!",
             "short": False
         })
     
@@ -319,7 +299,7 @@ def format_slack_message(summary, failed_tests):
 def send_text_to_slack():
     """Отправляет только текстовый отчет в Slack"""
     
-    tests = get_latest_test_run()
+    tests = get_all_tests()
     if not tests:
         print("[ERROR] No test results found")
         return False

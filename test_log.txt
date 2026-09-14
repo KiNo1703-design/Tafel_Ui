@@ -1,0 +1,37 @@
+[OK] Slack plugin registered
+
+[INFO] Cleaning allure-results before run...
+  [OK] allure-results removed
+  [OK] allure-results created
+============================= test session starts =============================
+platform win32 -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- C:\Users\k.novikov\AppData\Local\Programs\Python\Python312\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\k.novikov\Desktop\QA\Задачи\UI тест
+plugins: allure-pytest-2.16.0, anyio-4.15.0
+collecting ... collected 21 items
+
+tests/test_release_types.py::TestReleaseTypes::test_party_with_devices[lora_lte-add_multiple] 
+[INFO] Starting browser...
+[INFO] Running in hidden mode (browser window is hidden)
+[OK] Chrome browser started
+[ERROR] Authentication error: 'charmap' codec can't encode character '\U0001f517' in position 0: character maps to <undefined>
+[INFO] Screenshot saved as auth_error.png
+ERROR[INFO] Closing browser...
+
+tests/test_release_types.py::TestReleaseTypes::test_party_with_devices[twin-add_multiple] 
+[INFO] Starting browser...
+[INFO] Running in hidden mode (browser window is hidden)
+[OK] Chrome browser started
+[ERROR] Authentication error: 'charmap' codec can't encode character '\U0001f517' in position 0: character maps to <undefined>
+[INFO] Screenshot saved as auth_error.png
+ERROR[INFO] Closing browser...
+
+tests/test_release_types.py::TestReleaseTypes::test_party_with_devices[energo-add_multiple] 
+[INFO] Starting browser...
+[INFO] Running in hidden mode (browser window is hidden)
+[OK] Chrome browser started
+[ERROR] Authentication error: 'charmap' codec can't encode character '\U0001f517' in position 0: character maps to <undefined>
+[INFO] Screenshot saved as auth_error.png
+ERROR[INFO] Closing browser...
+
+tests/test_release_types.py::TestReleaseTypes::test_party_with_devices[Mercury_with_label-add_multiple] 
