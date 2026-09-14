@@ -1,10 +1,10 @@
 name: UI Tests with Allure Report
 
 on:
+  push:
+    branches: [ main, master ]
   schedule:
     - cron: '0 */2 * * *'
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 permissions:
