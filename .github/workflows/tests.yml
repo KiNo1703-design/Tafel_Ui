@@ -32,7 +32,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      # ✅ Устанавливаем Chrome, ChromeDriver и Java (для Allure)
       - name: Install Chrome and Allure
         run: |
           sudo apt-get update
@@ -42,7 +41,6 @@ jobs:
           echo "CHROME_BIN=/usr/bin/chromium" >> $GITHUB_ENV
           echo "CHROMEDRIVER_PATH=/usr/bin/chromedriver" >> $GITHUB_ENV
           
-          # Allure
           wget https://github.com/allure-framework/allure2/releases/download/2.32.0/allure-2.32.0.zip
           unzip allure-2.32.0.zip -d /opt/
           sudo ln -s /opt/allure-2.32.0/bin/allure /usr/local/bin/allure
@@ -50,6 +48,11 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
+
+      # ✅ Генерируем уникальное имя папки по дате и времени
+      - name: Set report path
+        id: report-path
+        run: echo "path=builds/tests/$(date +%Y%m%d%H%M)" >> $GITHUB_OUTPUT
 
       - name: Run tests
         run: pytest tests/test_release_types.py -v --headless --alluredir=allure-results --capture=no || true
@@ -61,7 +64,7 @@ jobs:
         with:
           allure-results: allure-results
           website: gh-pages-dir
-          reports-site-path: builds/tests
+          reports-site-path: ${{ steps.report-path.outputs.path }}
 
       - name: Publish Allure Report to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
@@ -74,12 +77,9 @@ jobs:
 
       - name: Send Slack Notification
         if: always()
-        uses: slackapi/slack-github-action@v1.27.0
-        with:
-          payload: |
-            {
-              "text": "Allure Report is ready: ${{ steps.allure-report.outputs.report-url }}"
-            }
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+          SLACK_CHANNEL: "#general"
+          ALLURE_REPORT_URL: https://kino1703.github.io/Tafel_Ui/${{ steps.report-path.outputs.path }}/
+        run: |
+          python send_allure_to_slack.py
